@@ -127,16 +127,33 @@ def get_all_series(driver):
 
 
 def select_season_interactive(driver, current_series_url):
-    print(f"\n--- Selección de Temporada para {current_series_url.split('/')[-1]} ---")
-    driver.get(current_series_url) 
-    # accept_cookies(driver) # Ya debería estar aceptado, pero por si acaso
+    """
+    Navega a la página de la serie. Si hay múltiples temporadas, permite seleccionar una.
+    Si solo hay una temporada (sin selector), la detecta y la devuelve.
+    Devuelve el texto de la temporada seleccionada/detectada (ej. "Temporada 1") o None.
+    """
+    print(f"\n--- Selección/Detección de Temporada para {current_series_url.split('/')[-1]} ---")
+    # No es necesario volver a cargar la URL si ya estamos en ella,
+    # pero por consistencia y para asegurar el estado correcto, lo hacemos.
+    if driver.current_url != current_series_url:
+        print(f"  Navegando a: {current_series_url}")
+        driver.get(current_series_url)
+        # accept_cookies(driver) # Ya debería estar aceptado de la llamada en main()
+
     wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
 
+    # Intentar encontrar el selector de temporadas múltiples
+    season_dropdown_trigger_xpath = "//div[contains(@class, 'select__value') and contains(., 'Temporada')]"
     try:
-        print("  Abriendo selector de temporadas...")
-        s_trigger_xpath = "//div[contains(@class, 'select__value') and contains(., 'Temporada')]"
-        s_trigger = wait.until(EC.element_to_be_clickable((By.XPATH, s_trigger_xpath)))
+        s_trigger = wait.until(EC.visibility_of_element_located((By.XPATH, season_dropdown_trigger_xpath)))
+        print("  Selector de temporadas múltiples encontrado.")
         default_season_text = s_trigger.text.strip()
+        
+        # Comprobar si el texto actual ya es el que queremos (en caso de que solo haya una opción o sea la correcta)
+        # Esto es más relevante si pasáramos un `TARGET_SEASON_INPUT` a esta función.
+        # Por ahora, siempre mostramos las opciones.
+
+        print(f"  Abriendo selector (actual: '{default_season_text}')...")
         driver.execute_script("arguments[0].click();", s_trigger)
         time.sleep(1.5)
 
@@ -145,9 +162,9 @@ def select_season_interactive(driver, current_series_url):
         
         available_s_texts = [el.text.strip() for el in s_elements if el.text.strip()]
         if not available_s_texts:
-            print(f"  No se encontraron opciones de temporada. Usando por defecto: '{default_season_text}'")
+            print(f"  No se encontraron opciones en el desplegable. Usando por defecto: '{default_season_text}'")
             if "Temporada" in default_season_text: return default_season_text
-            return None
+            return None # No hay opciones ni un default válido
 
         print("  Temporadas disponibles:")
         for i, s_text in enumerate(available_s_texts): print(f"    {i+1}. {s_text}")
@@ -155,20 +172,70 @@ def select_season_interactive(driver, current_series_url):
         while True:
             choice = input(f"  Elige temporada (1-{len(available_s_texts)}), o 'q' para salir: ")
             if choice.lower() == 'q': 
-                try: driver.execute_script("arguments[0].click();", s_trigger) # Cerrar desplegable
+                try: driver.execute_script("arguments[0].click();", s_trigger) # Intentar cerrar
                 except: pass
                 return None
             try:
                 num = int(choice)
                 if 1 <= num <= len(available_s_texts):
                     selected_s_text = available_s_texts[num-1]
+                    # Verificar si el desplegable sigue abierto y si el elemento es clickeable
+                    target_season_el = WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable(s_elements[num-1])
+                    )
                     print(f"  Seleccionando '{selected_s_text}'...")
-                    driver.execute_script("arguments[0].click();", s_elements[num-1])
+                    driver.execute_script("arguments[0].click();", target_season_el)
                     time.sleep(8); return selected_s_text
                 else: print("  Número fuera de rango.")
             except ValueError: print("  Entrada inválida.")
-    except Exception as e: print(f"  Error obteniendo/seleccionando temporadas: {e}"); return None
+            except TimeoutException:
+                print("  Timeout: La opción de temporada no era clickeable (quizás el desplegable se cerró). Reintentando abrir...")
+                # Intentar reabrir el desplegable y re-seleccionar
+                try:
+                    s_trigger_reopen = wait.until(EC.element_to_be_clickable((By.XPATH, season_dropdown_trigger_xpath)))
+                    driver.execute_script("arguments[0].click();", s_trigger_reopen)
+                    time.sleep(1)
+                    # Re-localizar el elemento específico
+                    s_elements_re = wait.until(EC.presence_of_all_elements_located((By.XPATH, s_options_xpath)))
+                    target_season_el_re = WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable(s_elements_re[num-1]) # Usar 'num' del intento anterior
+                    )
+                    print(f"  Re-seleccionando '{selected_s_text}'...")
+                    driver.execute_script("arguments[0].click();", target_season_el_re)
+                    time.sleep(8); return selected_s_text
+                except Exception as e_reselect:
+                    print(f"  Fallo al re-seleccionar temporada: {e_reselect}")
+                    return None
 
+
+    except TimeoutException: # El selector de temporadas múltiples no se encontró
+        print("  No se encontró selector de temporadas múltiples. Verificando si es una serie con temporada única...")
+        single_season_title_xpath = "//div[contains(@class, 'sonicshow__title') and contains(text(), 'Temporada')]"
+        try:
+            single_season_el = wait.until(EC.visibility_of_element_located((By.XPATH, single_season_title_xpath)))
+            season_text_from_title = single_season_el.text.strip()
+            # Extraer solo la parte "Temporada X"
+            match = re.search(r"(Temporada\s*\d+)", season_text_from_title)
+            if match:
+                detected_season = match.group(1)
+                print(f"  Detectada temporada única: '{detected_season}' (de '{season_text_from_title}')")
+                # No hay que hacer clic, ya está seleccionada por defecto.
+                time.sleep(1) # Pequeña pausa por consistencia
+                return detected_season
+            else:
+                print(f"  Se encontró título de sección, pero no se pudo extraer info de temporada: '{season_text_from_title}'")
+                return None
+        except TimeoutException:
+            print("  No se encontró título de temporada única. La estructura de la página puede ser diferente o no hay episodios.")
+            # driver.save_screenshot("error_no_season_selector_or_title.png")
+            return None
+        except Exception as e_single:
+            print(f"  Error detectando temporada única: {e_single}")
+            return None
+            
+    except Exception as e_multi:
+        print(f"  Error general obteniendo/seleccionando temporadas (múltiples): {e_multi}")
+        return None
 def get_episode_elements_for_current_season(driver):
     wait = WebDriverWait(driver, SELENIUM_TIMEOUT)
     print("  Obteniendo lista de episodios para la temporada actual...")
