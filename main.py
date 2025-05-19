@@ -327,12 +327,12 @@ def main():
             for i, episode_card_element in enumerate(episode_elements):
                 # Obtener el título del episodio desde el aria-label de la imagen DENTRO de la tarjeta
                 episode_title_from_page = "Desconocido"
-                try {
+                try :
                     img_element = WebDriverWait(episode_card_element, 5).until(
                         EC.presence_of_element_located((By.XPATH, ".//img[@aria-label]"))
                     )
                     episode_title_from_page = img_element.get_attribute("aria-label").strip()
-                } except:
+                except:
                     # Fallback: intentar obtener de h2.card__title
                     try:
                         title_h2_element = WebDriverWait(episode_card_element, 2).until(
